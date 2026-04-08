@@ -163,22 +163,18 @@ OasisAPI <- R6Class(
       status <- http_status(response)$category
       # 292: more detailed logging of API query issues
       if (status == "Client error" && response$headers[["content-type"]] == "text/html") {
-        oasisuiNotification(type = "error",
-                            paste0(status_code(response), ": Client error in API query - bad request."))
+        # Log only — no popup. 404 on deleted resources is expected during navigation.
         warning(paste("Client error", status_code(response), "in api_handle_response, probably trying to access a non-existent query path."))
         logMessage(response$url)
       } else if (status == "Client error" && !is.null(content(response)$detail) && content(response)$detail == "Not found.") {
-        oasisuiNotification(type = "error",
-                            paste0(status_code(response), ": Client error in API query - not found."))
+        # Log only — no popup. 404 on deleted resources is expected during navigation.
         warning(paste("Client error", status_code(response), "in api_handle_response, valid query but API did not find / return the requested resource."))
         logMessage(response$url)
       } else if (status == "Server error") {
         oasisuiNotification(type = "error",
                             paste0(status_code(response), ": Server error upon API query - retry and/or check network / API server."))
         warning(paste("Server error", status_code(response), "in api_handle_response."))
-      } else if (status_code(response) != 200L) {  # 201 (create ana), 204 (delete pf)
-        # oasisuiNotification(type = "message",
-        #                     paste0(status_code(response), ": Unexpected status code returned by API query..."))
+      } else if (!status_code(response) %in% c(200L, 201L, 204L)) {
         logMessage(paste("Unexpected status code", status_code(response), "in api_handle_response."))
       }
       structure(
@@ -324,6 +320,16 @@ OasisAPI <- R6Class(
     },
     api_return_query_res = function(query_path, query_list = NULL, query_method, ...) {
       response <- self$api_query(query_path, query_list = NULL, query_method)
+      # Guard against error responses — return NULL instead of trying to parse
+      # HTML error pages (which would require xml2 and crash).
+      if (http_status(response$result)$category != "Success") {
+        return(NULL)
+      }
+      ct <- response$result$headers[["content-type"]]
+      if (!is.null(ct) && grepl("text/html", ct, fixed = TRUE)) {
+        logMessage(paste("api_return_query_res: skipping HTML response for", query_path))
+        return(NULL)
+      }
       content(response$result)
     },
     # > return from query ----

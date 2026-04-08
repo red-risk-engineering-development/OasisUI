@@ -287,8 +287,9 @@ step1_choosePortfolio <- function(input, output, session,
       enable("abuttonamendpf")
       enable("abuttonuploadsourcefiles")
       # the row selection will only be updated at the end, so rather use the more complicated lookup
-      #if (!is.null(result$tbl_portfoliosData) && result$tbl_portfoliosData[input$dt_Portfolios_rows_selected, tbl_portfoliosDataNames$status] == Status$Completed) {
-      if (!is.null(result$tbl_portfoliosData) && result$tbl_portfoliosData[result$tbl_portfoliosData[, tbl_portfoliosDataNames$id] == result$portfolioID, tbl_portfoliosDataNames$status] == Status$Completed) {
+      pfrows <- which(result$tbl_portfoliosData[, tbl_portfoliosDataNames$id] == result$portfolioID)
+      if (!is.null(result$tbl_portfoliosData) && result$portfolioID != "" && length(pfrows) > 0 &&
+          isTRUE(result$tbl_portfoliosData[pfrows[1], tbl_portfoliosDataNames$status] == Status$Completed)) {
         enable("abuttonpgotonextstep")
       }
     }
@@ -485,6 +486,7 @@ step1_choosePortfolio <- function(input, output, session,
       oasisuiNotification(type = "error",
                           paste0("Portfolio ", pfName, " could not deleted."))
     }
+    result$portfolioID <- ""
     .reloadtbl_portfoliosData()
     removeModal()
   })

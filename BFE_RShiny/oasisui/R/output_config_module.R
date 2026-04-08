@@ -886,6 +886,8 @@ def_out_config <- function(input,
   .getModelID <- function() {
     tbl_analysesData <- session$userData$data_hub$return_tbl_analysesData(Status = Status, tbl_analysesDataNames = tbl_analysesDataNames)
     modelID <- tbl_analysesData[tbl_analysesData[, tbl_analysesDataNames$id] == analysisID(), tbl_analysesDataNames$model]
+    # Guard: if analysis was deleted, subsetting returns empty — return NULL
+    if (length(modelID) == 0) return(NULL)
     modelID
   }
 
@@ -897,6 +899,8 @@ def_out_config <- function(input,
     tbl_analysesData <- session$userData$data_hub$return_tbl_analysesData(Status = Status, tbl_analysesDataNames = tbl_analysesDataNames)
     # Model params
     modelID <- tbl_analysesData[tbl_analysesData[, tbl_analysesDataNames$id] == analysisID(), tbl_analysesDataNames$model]
+    # Guard: if analysis was deleted, modelID is empty — bail out
+    if (length(modelID) == 0) return(invisible())
 
     if (length(analysisID()) != 0) {
       # settings templates

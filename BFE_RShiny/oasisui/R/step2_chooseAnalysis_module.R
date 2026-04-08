@@ -317,9 +317,14 @@ step2_chooseAnalysis <- function(input, output, session,
       if (!is.null(input$dt_analyses_rows_selected)) {
         # switching to a portfolio that does not contain any analyses will still initially result in the above being 1 rather than NULL,
         # in which case result$analysisID would become NA.
-        result$analysisID <- result$tbl_analysesData[input$dt_analyses_rows_selected, tbl_analysesDataNames$id]
+        # Guard: check table exists and row index is valid before subsetting.
+        if (!is.null(result$tbl_analysesData) && input$dt_analyses_rows_selected <= nrow(result$tbl_analysesData)) {
+          result$analysisID <- result$tbl_analysesData[input$dt_analyses_rows_selected, tbl_analysesDataNames$id]
+        } else {
+          result$analysisID <- NULL
+        }
         logMessage(paste("updating result$analysisID in step2 to", result$analysisID))
-        if (is.na(result$analysisID)) result$analysisID <- NULL
+        if (!is.null(result$analysisID) && length(result$analysisID) > 0 && is.na(result$analysisID)) result$analysisID <- NULL
       } else {
         result$analysisID <- NULL
       }
