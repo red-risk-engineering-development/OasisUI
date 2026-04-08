@@ -225,15 +225,19 @@ singleAna <- function(input, output, session,
     result$tbl_portfoliosData
   }, ignoreInit = TRUE, {
     result$tbl_portfoliosData_rowselected <- match(result$portfolioID, result$pfChoices)
-    result$pfName <- result$tbl_portfoliosData[result$tbl_portfoliosData_rowselected, tbl_portfoliosDataNames$name]
+    # Guard: rowselected may be NA if portfolioID was deleted or not found
+    if (!is.na(result$tbl_portfoliosData_rowselected) && result$tbl_portfoliosData_rowselected <= nrow(result$tbl_portfoliosData)) {
+      result$pfName <- result$tbl_portfoliosData[result$tbl_portfoliosData_rowselected, tbl_portfoliosDataNames$name]
+    } else {
+      result$pfName <- ""
+    }
     pfstatus <- ""
-    # result$tbl_portfoliosData should probably not be checked for NA but something else
     if (!is.na(result$tbl_portfoliosData_rowselected) && !all(is.na(result$tbl_portfoliosData)) && length(result$tbl_portfoliosData_rowselected) > 0) {
-      if (result$tbl_portfoliosData[result$tbl_portfoliosData_rowselected, tbl_portfoliosDataNames$status] == Status$Completed) {
+      if (isTRUE(result$tbl_portfoliosData[result$tbl_portfoliosData_rowselected, tbl_portfoliosDataNames$status] == Status$Completed)) {
         pfstatus <- "- Status: Completed"
-      } else if (result$tbl_portfoliosData[result$tbl_portfoliosData_rowselected, tbl_portfoliosDataNames$status] == Status$Processing) {
+      } else if (isTRUE(result$tbl_portfoliosData[result$tbl_portfoliosData_rowselected, tbl_portfoliosDataNames$status] == Status$Processing)) {
         pfstatus <- "- Status: in Progress"
-      } else if (result$tbl_portfoliosData[result$tbl_portfoliosData_rowselected, tbl_portfoliosDataNames$status] == Status$Failed) {
+      } else if (isTRUE(result$tbl_portfoliosData[result$tbl_portfoliosData_rowselected, tbl_portfoliosDataNames$status] == Status$Failed)) {
         pfstatus <- "- Status: Failed"
       }
     }
