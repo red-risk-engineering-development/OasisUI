@@ -187,6 +187,13 @@ ViewFilesInTable <- function(input, output, session,
           fileData <- session$userData$data_hub$get_pf_dataset_content(id = param(), dataset_identifier = filename)
           filename <- paste0(filename, ".csv")
         } else {
+          # files already extracted in the results cache are zipped as they are:
+          # no load into R and no rewrite
+          cached_path <- session$userData$data_hub$get_ana_dataset_path(id = param(), type = folderpath, dataset_identifier = filename)
+          if (!is.null(cached_path)) {
+            fs <- c(fs, cached_path)
+            next
+          }
           fileData <- session$userData$data_hub$get_ana_dataset_content(id = param(), dataset_identifier = filename, type = folderpath)
         }
         if (!is.null(fileData)) {
@@ -194,7 +201,8 @@ ViewFilesInTable <- function(input, output, session,
           fs <- c(fs, fpath)
         }
       }
-      zip(zipfile = fname, files = fs)
+      # -j: no directory names in the archive, -1: fast compression
+      zip(zipfile = fname, files = fs, flags = "-r1Xj")
       # if (file.exists(paste0(fname, currfolder))) file.rename(paste0(fname, ".zip"), fname)
     }
   )
@@ -356,18 +364,33 @@ ViewFilesInTable <- function(input, output, session,
     }
   )
 
+  # full content of the current file: the viewer only holds the first rows of big files
+  .fullFileData <- function() {
+    if (isTRUE(result$truncated)) {
+      session$userData$data_hub$get_ana_dataset_content(id = param(), dataset_identifier = result$fileCategory, type = folderpath)
+    } else {
+      result$tbl_fileData
+    }
+  }
+
   # Export to .csv
   output$FVEdownloadexcel <- downloadHandler(
     filename = function(){result$currentFile},
     content = function(file) {
-      session$userData$data_hub$write_csv_file(data = result$tbl_fileData, dataset_identifier = result$currentFile, file_towrite = file)
+      # copy the original csv from the results cache when available (no reload, no rewrite)
+      cached_path <- session$userData$data_hub$get_ana_dataset_path(id = param(), type = folderpath, dataset_identifier = result$fileCategory)
+      if (!is.null(cached_path) && tolower(tools::file_ext(cached_path)) == "csv") {
+        file.copy(cached_path, file, overwrite = TRUE)
+      } else {
+        session$userData$data_hub$write_csv_file(data = .fullFileData(), dataset_identifier = result$currentFile, file_towrite = file)
+      }
     }
   )
   # Export to .parquet
   output$FVEdownloadparquet <- downloadHandler(
     filename = function(){result$currentFileP},
     content = function(file) {
-      session$userData$data_hub$write_parquet_file(data = result$tbl_fileData, dataset_identifier = result$currentFileP,
+      session$userData$data_hub$write_parquet_file(data = .fullFileData(), dataset_identifier = result$currentFileP,
                                               file_towrite = file)
     }
   )
@@ -375,7 +398,7 @@ ViewFilesInTable <- function(input, output, session,
   output$FVEdownloadjson <- downloadHandler(
     filename = function(){result$currentFile},
     content = function(file) {
-      session$userData$data_hub$write_file_json(data = result$tbl_fileData, dataset_identifier = result$currentFile, file_towrite = file)
+      session$userData$data_hub$write_file_json(data = .fullFileData(), dataset_identifier = result$currentFile, file_towrite = file)
     }
   )
 
@@ -398,6 +421,7 @@ ViewFilesInTable <- function(input, output, session,
     result$currentFile <- result$tbl_filesListData_wButtons[idx, file_column] %>% as.character()
     result$fileCategory <- result$currentFile
     result$currentFileP <- paste0(result$fileCategory, ".parquet")
+    result$truncated <- FALSE
     if (result$fileCategory %in% c("location_file", "accounts_file", "reinsurance_info_file", "reinsurance_scope_file")) {
       result$tbl_fileData <- session$userData$data_hub$get_pf_dataset_content(id = param(), dataset_identifier = result$fileCategory)
       if (!is.null(result$tbl_fileData)) {
@@ -417,10 +441,13 @@ ViewFilesInTable <- function(input, output, session,
         }
       }
     } else {
-      result$tbl_fileData <- session$userData$data_hub$get_ana_dataset_content(id = param(), dataset_identifier = result$fileCategory, type = folderpath)
+      # only the first rows are loaded in the viewer (OASISUI_VIEW_MAX_ROWS); downloads use the full file
+      result$tbl_fileData <- session$userData$data_hub$get_ana_dataset_content(id = param(), dataset_identifier = result$fileCategory, type = folderpath, nrows = .rc_view_max_rows())
       if (!is.null(result$tbl_fileData)) {
         filecolumns <- session$userData$data_hub$get_ana_dataset_header(id = param(), dataset_identifier = result$fileCategory, type = folderpath)
         filerows <- session$userData$data_hub$get_ana_dataset_nrow(id = param(), dataset_identifier = result$fileCategory, type = folderpath)
+        result$truncated <- is.data.frame(result$tbl_fileData) && is.numeric(filerows) && !is.na(filerows) &&
+          nrow(result$tbl_fileData) < filerows
       }
       # Show buttons
       if ("latitude" %in% tolower(names(result$tbl_fileData))) {
@@ -451,7 +478,13 @@ ViewFilesInTable <- function(input, output, session,
                  h5("Number of Rows")
           ),
           column(10,
-                 p(filerows, style = "margin-top: 10px;")
+                 p(if (isTRUE(result$truncated)) {
+                     paste0(format(filerows, big.mark = ","), " (showing the first ",
+                            format(nrow(result$tbl_fileData), big.mark = ","),
+                            " rows; downloads contain the full file)")
+                   } else {
+                     filerows
+                   }, style = "margin-top: 10px;")
           )
         ),
         fluidRow(

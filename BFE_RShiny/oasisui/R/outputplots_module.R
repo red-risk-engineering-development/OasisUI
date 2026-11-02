@@ -370,7 +370,8 @@ panelOutputModule <- function(input, output, session,
       types_list <- unique(unlist(lapply(idx_r_unlist, function(x) {
         session$userData$data_hub$get_ana_outputs_dataset_content(
           id = anaID(),
-          dataset_identifier = filesListData()$files[[x]])$type
+          dataset_identifier = filesListData()$files[[x]],
+          select = "type")$type
 
       })
       ))
