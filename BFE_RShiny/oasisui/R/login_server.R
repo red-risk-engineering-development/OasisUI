@@ -40,6 +40,9 @@ loginDialog <- function(input, output, session, logout) {
   observeEvent(logout(), {
     js$reset()
     result$user <- OASISUI_GUEST_ID
+    if (!is.null(session$userData$data_hub)) {
+      session$userData$data_hub$cancel_jobs()
+    }
     session$userData$data_hub <-  NULL
   })
 
@@ -51,7 +54,10 @@ loginDialog <- function(input, output, session, logout) {
       if (!is.null(session$userData$oasisapi$get_access_token())) {
         result$user <- user
         # initialize data_hub R6 class to manage files and files lists in OasisUI
-        session$userData$data_hub <- DataHub$new(user = session$userData$oasisapi$get_access_token(), destdir = getOption("oasisui.settings.api.share_filepath"), oasisapi = session$userData$oasisapi)
+        data_hub <- DataHub$new(user = session$userData$oasisapi$get_access_token(), destdir = getOption("oasisui.settings.api.share_filepath"), oasisapi = session$userData$oasisapi)
+        session$userData$data_hub <- data_hub
+        # stop background result extractions of this session when it ends
+        session$onSessionEnded(function() try(data_hub$cancel_jobs(), silent = TRUE))
       } else {
         result$user = OASISUI_GUEST_ID
         oasisuiNotification("Login Failed, please check your credentials.", type = "error")

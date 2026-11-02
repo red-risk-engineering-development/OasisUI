@@ -145,30 +145,37 @@ DataHub <- R6Class(
     user_destdir = "",  # user specific destdir
     oasisapi = NULL,  # oasisapi as stored in session$userData$oasisapi
     loc_memo = NULL,  # short-lived memo of bundle locations (avoids one API call per read)
-    # Directory with the extracted input/output bundle of an analysis, or NULL
-    # when the results cache is not usable (caller then falls back to the HTTP
-    # download + untar path).
+    jobs = NULL,  # background extraction jobs started by this session, by cache key
+    # Location of the input/output bundle of an analysis on the shared volume as
+    # list(archive, key), or NULL when it cannot be used directly (caller then
+    # falls back to the HTTP download + untar path). Memoised for a few seconds.
+    bundle = function(id, label) {
+      memo_key <- paste(id, label, sep = "/")
+      memo <- private$loc_memo[[memo_key]]
+      if (!is.null(memo) && difftime(Sys.time(), memo$time, units = "secs") < 20) {
+        return(memo$bundle)
+      }
+      archive <- .rc_timed(paste0("locate ", label, " bundle, analysis ", id),
+                           .rc_locate_bundle(private$oasisapi, id, label))
+      b <- if (is.null(archive)) {
+        NULL
+      } else {
+        list(archive = archive, key = sub("\\.(tar\\.gz|tgz|tar|gz)$", "", basename(archive)))
+      }
+      assign(memo_key, list(bundle = b, time = Sys.time()), envir = private$loc_memo)
+      b
+    },
+    # Directory with the extracted bundle (extracting it now if needed), or NULL
+    # when the results cache is not usable.
     cached_dir = function(id, label) {
       if (!.rc_enabled()) {
         return(NULL)
       }
-      memo_key <- paste(id, label, sep = "/")
-      memo <- private$loc_memo[[memo_key]]
-      if (!is.null(memo) && difftime(Sys.time(), memo$time, units = "secs") < 20 && dir.exists(memo$dir)) {
-        .rc_touch(memo$dir)
-        return(memo$dir)
-      }
-      archive <- .rc_timed(paste0("locate ", label, " bundle, analysis ", id),
-                           .rc_locate_bundle(private$oasisapi, id, label))
-      if (is.null(archive)) {
+      b <- private$bundle(id, label)
+      if (is.null(b)) {
         return(NULL)
       }
-      key <- sub("\\.(tar\\.gz|tgz|tar|gz)$", "", basename(archive))
-      dir <- .rc_ensure_extracted(archive, key)
-      if (!is.null(dir)) {
-        assign(memo_key, list(dir = dir, time = Sys.time()), envir = private$loc_memo)
-      }
-      dir
+      .rc_ensure_extracted(b$archive, b$key)
     }
   ),
   public = list(
@@ -180,6 +187,72 @@ DataHub <- R6Class(
       dir.create(private$user_destdir, showWarnings = FALSE, recursive = TRUE)
       private$oasisapi <- oasisapi
       private$loc_memo <- new.env()
+      private$jobs <- new.env()
+    },
+    # Background preparation ----
+    # Starts (or polls) the extraction of the output and input bundles of an analysis
+    # in a background process, so the Shiny process is never blocked by a first open.
+    # Returns list(state, elapsed): state is "running" while an extraction is in
+    # progress, "ready" when the bundles are cached, the cache is disabled, or the
+    # bundles cannot be used directly (the synchronous path then handles them).
+    prepare_ana_results = function(id, tag = "results", labels = c("output", "input"), ...) {
+      if (!.rc_enabled()) {
+        return(list(state = "ready", elapsed = 0))
+      }
+      state <- "ready"
+      elapsed <- 0
+      for (label in labels) {
+        b <- private$bundle(id, label)
+        if (is.null(b)) {
+          next
+        }
+        job <- private$jobs[[b$key]]
+        if (dir.exists(file.path(.rc_cache_dir(), b$key))) {
+          .rc_touch(file.path(.rc_cache_dir(), b$key))
+          if (!is.null(job)) {
+            rm(list = b$key, envir = private$jobs)
+            .rc_evict(keep = b$key)
+          }
+          next
+        }
+        if (is.null(job)) {
+          job <- .rc_start_extract(b$archive, b$key)
+          job$tag <- tag
+          job$id <- id
+          assign(b$key, job, envir = private$jobs)
+        }
+        job_state <- .rc_job_state(job)
+        if (job_state == "running") {
+          state <- "running"
+          elapsed <- max(elapsed, as.numeric(difftime(Sys.time(), job$started, units = "secs")))
+        } else {
+          # finished, or failed (the synchronous path will retry and fall back if needed)
+          if (job_state == "failed") {
+            .rc_cancel_job(job)
+          }
+          rm(list = b$key, envir = private$jobs)
+        }
+      }
+      list(state = state, elapsed = elapsed)
+    },
+    # Cancel background extractions started with `tag`, except those of analysis `except_id`.
+    cancel_pending_prepare = function(tag = "results", except_id = NULL, ...) {
+      for (key in ls(private$jobs, all.names = TRUE)) {
+        job <- private$jobs[[key]]
+        if (identical(job$tag, tag) && !identical(as.character(job$id), as.character(except_id))) {
+          .rc_cancel_job(job)
+          rm(list = key, envir = private$jobs)
+        }
+      }
+      invisible()
+    },
+    # Cancel all background extractions of this session (session end).
+    cancel_jobs = function() {
+      for (key in ls(private$jobs, all.names = TRUE)) {
+        .rc_cancel_job(private$jobs[[key]])
+        rm(list = key, envir = private$jobs)
+      }
+      invisible()
     },
     # Terminate ----
     terminate = function() {

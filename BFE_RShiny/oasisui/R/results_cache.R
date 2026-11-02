@@ -143,23 +143,22 @@
   sum(file.size(files), na.rm = TRUE)
 }
 
-.rc_extract_cmd <- function(archive, dest) {
-  is_gz <- grepl("\\.(tar\\.gz|tgz|gz)$", archive)
-  if (is_gz && nzchar(Sys.which("pigz"))) {
-    sprintf("set -o pipefail; pigz -dc %s | tar -xf - -C %s", shQuote(archive), shQuote(dest))
-  } else {
-    sprintf("set -o pipefail; tar -xf %s -C %s", shQuote(archive), shQuote(dest))
-  }
+.rc_script <- function() {
+  system.file("scripts", "rc_extract.sh", package = "oasisui")
 }
 
-#' Extract an archive once into the shared cache and return the directory.
+.rc_extract_args <- function(archive, cache, key, pidfile = NULL) {
+  c(shQuote(.rc_script()), shQuote(archive), shQuote(cache), shQuote(key),
+    if (!is.null(pidfile)) shQuote(pidfile))
+}
+
+#' Extract an archive once into the shared cache and return the directory (blocking).
 #'
-#' Extraction goes to a temporary directory that is renamed into place only when
-#' complete, so a crash or a concurrent request never exposes a half-extracted
-#' analysis. A lock directory makes concurrent requests for the same bundle wait
-#' instead of extracting twice. Returns NULL on failure (caller falls back).
+#' The work is done by inst/scripts/rc_extract.sh (temporary directory renamed into
+#' place when complete, lock with owner pid so concurrent requests wait for the first
+#' extraction, row-count sidecars). Returns NULL on failure (caller falls back).
 #' @noRd
-.rc_ensure_extracted <- function(archive, key, wait_secs = 3600) {
+.rc_ensure_extracted <- function(archive, key) {
   cache <- .rc_cache_dir()
   final <- file.path(cache, key)
   if (dir.exists(final)) {
@@ -167,55 +166,82 @@
     .rc_maybe_evict(keep = key)
     return(final)
   }
-
-  lock <- file.path(cache, paste0(".lock-", key))
-  deadline <- Sys.time() + wait_secs
-  repeat {
-    if (dir.exists(final)) {
-      .rc_touch(final)
-      return(final)
-    }
-    if (dir.create(lock, showWarnings = FALSE)) {
-      break
-    }
-    # steal stale locks (crashed extraction)
-    age <- as.numeric(difftime(Sys.time(), file.mtime(lock), units = "secs"))
-    if (!is.na(age) && age > 6 * 3600) {
-      unlink(lock, recursive = TRUE)
-      next
-    }
-    if (Sys.time() > deadline) {
-      return(NULL)
-    }
-    Sys.sleep(1)
-  }
-  on.exit(unlink(lock, recursive = TRUE), add = TRUE)
-
-  if (dir.exists(final)) {
-    .rc_touch(final)
-    return(final)
-  }
-
-  tmp <- file.path(cache, paste0(".tmp-", key, "-", Sys.getpid(), "-", format(Sys.time(), "%H%M%S")))
-  unlink(tmp, recursive = TRUE)
-  dir.create(tmp, recursive = TRUE, showWarnings = FALSE)
-  status <- .rc_timed(
+  .rc_timed(
     paste0("extract ", key),
-    system2("bash", c("-c", shQuote(.rc_extract_cmd(archive, tmp))), stdout = FALSE, stderr = FALSE)
+    system2("bash", .rc_extract_args(archive, cache, key), stdout = FALSE, stderr = FALSE)
   )
-  if (!identical(as.integer(status), 0L)) {
-    unlink(tmp, recursive = TRUE)
+  if (!dir.exists(final)) {
     return(NULL)
   }
-  .rc_touch(tmp)
-  if (!file.rename(tmp, final)) {
-    unlink(tmp, recursive = TRUE)
-    if (!dir.exists(final)) {
-      return(NULL)
-    }
-  }
+  .rc_touch(final)
   .rc_evict(keep = key)
   final
+}
+
+# Background extraction ----
+#
+# The same script is started detached (own session, so it can be cancelled together
+# with pigz/tar) and R only polls the cache folder: the Shiny process is never blocked.
+
+#' Start the extraction of a bundle in the background. Returns a job record.
+#' @noRd
+.rc_start_extract <- function(archive, key) {
+  cache <- .rc_cache_dir()
+  pidfile <- tempfile(pattern = ".job-", tmpdir = cache, fileext = ".pid")
+  system2("setsid", c("bash", .rc_extract_args(archive, cache, key, pidfile)),
+          wait = FALSE, stdout = FALSE, stderr = FALSE)
+  list(key = key, archive = archive, pidfile = pidfile, started = Sys.time())
+}
+
+.rc_pid_alive <- function(pid) {
+  if (is.na(pid)) {
+    return(FALSE)
+  }
+  stat <- suppressWarnings(tryCatch(readLines(sprintf("/proc/%d/stat", pid), n = 1, warn = FALSE),
+                                    error = function(e) character(0)))
+  if (length(stat) == 0) {
+    return(FALSE)
+  }
+  # state is the field after the closing parenthesis of the command name; Z = zombie
+  state <- sub("^.*\\) ([A-Za-z]).*$", "\\1", stat)
+  !identical(state, "Z")
+}
+
+#' State of a background job: "ready", "running" or "failed".
+#' @noRd
+.rc_job_state <- function(job) {
+  if (dir.exists(file.path(.rc_cache_dir(), job$key))) {
+    return("ready")
+  }
+  elapsed <- as.numeric(difftime(Sys.time(), job$started, units = "secs"))
+  if (!file.exists(job$pidfile)) {
+    # not started yet (grace period) or finished without producing the bundle
+    return(if (elapsed < 20) "running" else "failed")
+  }
+  pid <- suppressWarnings(as.integer(readLines(job$pidfile, n = 1, warn = FALSE)))
+  if (.rc_pid_alive(pid)) "running" else "failed"
+}
+
+#' Cancel a background job: kills its whole process group and removes leftovers.
+#' @noRd
+.rc_cancel_job <- function(job) {
+  pid <- if (file.exists(job$pidfile)) {
+    suppressWarnings(as.integer(readLines(job$pidfile, n = 1, warn = FALSE)))
+  } else {
+    NA_integer_
+  }
+  if (!is.na(pid) && .rc_pid_alive(pid)) {
+    # explicit bash: the default sh (dash) kill does not accept "--" before a negative pid
+    system2("bash", c("-c", shQuote(sprintf("kill -TERM -- -%d", pid))), stdout = FALSE, stderr = FALSE)
+    Sys.sleep(0.3)
+  }
+  cache <- .rc_cache_dir()
+  # the script cleans up after itself on TERM; this covers a kill before it could
+  if (!dir.exists(file.path(cache, job$key))) {
+    unlink(list.files(cache, pattern = paste0("^\\.tmp-", job$key, "-"), all.files = TRUE, full.names = TRUE), recursive = TRUE)
+  }
+  unlink(job$pidfile)
+  invisible()
 }
 
 #' LRU eviction: keep the N most recently used analyses and stay below the size cap.
@@ -335,4 +361,63 @@
             if (nzchar(type)) file.path(dir, type, dataset_identifier))
   cand <- cand[file.exists(cand)]
   if (length(cand) == 0) NULL else cand[1]
+}
+
+# Shiny helper ----
+
+#' Prepare the result bundles of the selected analysis in the background, then continue.
+#'
+#' Observes `id()` (and `active()`): when an analysis is selected its bundles are
+#' extracted by a background process while the app stays responsive; a notification
+#' shows the progress, and `on_ready(id)` is called once they are cached (immediately
+#' when they already are). Selecting another analysis cancels the extraction of the
+#' previous one (started by this helper). `on_start(id)` is called at selection, before
+#' the preparation (e.g. to clear data of the previously selected analysis).
+#'
+#' Must be called from a module server function (needs `session`).
+#' @noRd
+.rc_prepare_then <- function(session, id, active, on_ready, on_start = function(id) NULL, tag = "results") {
+  pending <- reactiveVal(NULL)
+  note_id <- paste0("oasisui-prepare-", tag)
+
+  observeEvent({
+    id()
+    active()
+  }, {
+    cur <- id()
+    hub <- session$userData$data_hub
+    if (is.null(hub)) {
+      return()
+    }
+    hub$cancel_pending_prepare(tag, except_id = cur)
+    if (isTRUE(active()) && !is.null(cur)) {
+      on_start(cur)
+      pending(cur)
+    } else {
+      pending(NULL)
+      removeNotification(note_id, session = session)
+    }
+  }, ignoreNULL = FALSE)
+
+  observe({
+    cur <- pending()
+    if (is.null(cur)) {
+      return()
+    }
+    res <- session$userData$data_hub$prepare_ana_results(cur, tag = tag)
+    if (identical(res$state, "running")) {
+      showNotification(
+        sprintf("Preparing results of analysis %s, first open only (%d s)...", cur, as.integer(res$elapsed)),
+        id = note_id, duration = NULL, closeButton = FALSE, type = "message", session = session
+      )
+      invalidateLater(750, session)
+    } else {
+      removeNotification(note_id, session = session)
+      isolate({
+        pending(NULL)
+        on_ready(cur)
+      })
+    }
+  })
+  invisible()
 }
