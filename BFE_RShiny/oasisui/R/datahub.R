@@ -143,7 +143,33 @@ DataHub <- R6Class(
   private = list(
     user = "",  # string identifying the user
     user_destdir = "",  # user specific destdir
-    oasisapi = NULL  # oasisapi as stored in session$userData$oasisapi
+    oasisapi = NULL,  # oasisapi as stored in session$userData$oasisapi
+    loc_memo = NULL,  # short-lived memo of bundle locations (avoids one API call per read)
+    # Directory with the extracted input/output bundle of an analysis, or NULL
+    # when the results cache is not usable (caller then falls back to the HTTP
+    # download + untar path).
+    cached_dir = function(id, label) {
+      if (!.rc_enabled()) {
+        return(NULL)
+      }
+      memo_key <- paste(id, label, sep = "/")
+      memo <- private$loc_memo[[memo_key]]
+      if (!is.null(memo) && difftime(Sys.time(), memo$time, units = "secs") < 20 && dir.exists(memo$dir)) {
+        .rc_touch(memo$dir)
+        return(memo$dir)
+      }
+      archive <- .rc_timed(paste0("locate ", label, " bundle, analysis ", id),
+                           .rc_locate_bundle(private$oasisapi, id, label))
+      if (is.null(archive)) {
+        return(NULL)
+      }
+      key <- sub("\\.(tar\\.gz|tgz|tar|gz)$", "", basename(archive))
+      dir <- .rc_ensure_extracted(archive, key)
+      if (!is.null(dir)) {
+        assign(memo_key, list(dir = dir, time = Sys.time()), envir = private$loc_memo)
+      }
+      dir
+    }
   ),
   public = list(
     # Initialize ----
@@ -153,6 +179,7 @@ DataHub <- R6Class(
       # if (dir.exists(private$user_destdir)) stop()
       dir.create(private$user_destdir, showWarnings = FALSE, recursive = TRUE)
       private$oasisapi <- oasisapi
+      private$loc_memo <- new.env()
     },
     # Terminate ----
     terminate = function() {
@@ -207,6 +234,14 @@ DataHub <- R6Class(
     # > Analysis ----
     # return list of analysis resources
     get_ana_inputs_data_list = function(id, ...) {
+      dir <- private$cached_dir(id, "input")
+      if (!is.null(dir)) {
+        files <- .rc_list_files(dir)
+        if (length(files) == 0) {
+          return(NULL)
+        }
+        return(data.frame(files = files, stringsAsFactors = FALSE))
+      }
       tarfile <- self$get_analyses_inputs_tar(id,  destdir = private$user_destdir)
       data_list <- untar_list(tarfile)
       if (length(data_list) > 0) {
@@ -219,10 +254,17 @@ DataHub <- R6Class(
       data_list
     },
     get_ana_outputs_data_list = function(id, ...) {
-      tarfile <- self$get_analyses_outputs_tar(id, destdir =  private$user_destdir)
+      dir <- private$cached_dir(id, "output")
       data_list <- NULL
-      if (file.exists(tarfile)) {
-        data_list <- untar_list(tarfile, to_strip = "output")
+      if (!is.null(dir)) {
+        data_list <- simplify_path(.rc_list_files(dir), "output")
+      } else {
+        tarfile <- self$get_analyses_outputs_tar(id, destdir =  private$user_destdir)
+        if (file.exists(tarfile)) {
+          data_list <- untar_list(tarfile, to_strip = "output")
+        }
+      }
+      if (!is.null(data_list)) {
         if (length(data_list) > 0) {
           data_list <- data_list %>%
             as.data.frame() %>%
@@ -348,11 +390,11 @@ DataHub <- R6Class(
 
     # > ANALYSIS METHODS ----
     # extract a input/output file given an analysis id
-    get_ana_dataset_content = function(id, dataset_identifier, type = "", ...) {
+    get_ana_dataset_content = function(id, dataset_identifier, type = "", nrows = Inf, ...) {
       if (type == "input") {
-        dataset_content <- self$get_ana_inputs_dataset_content(id, dataset_identifier)
+        dataset_content <- self$get_ana_inputs_dataset_content(id, dataset_identifier, nrows = nrows)
       } else if (type == "output") {
-        dataset_content <- self$get_ana_outputs_dataset_content(id, dataset_identifier)
+        dataset_content <- self$get_ana_outputs_dataset_content(id, dataset_identifier, nrows = nrows)
       } else {
         query_response <- private$oasisapi$api_get_query(query_path = paste("analyses", id, dataset_identifier,  sep = "/"))
         dataset_content <- content(query_response$result)
@@ -366,7 +408,15 @@ DataHub <- R6Class(
       invisible()
     },
     # extract a inputs file content given an analysis id
-    get_ana_inputs_dataset_content = function(id, dataset_identifier, ...) {
+    get_ana_inputs_dataset_content = function(id, dataset_identifier, nrows = Inf, select = NULL, ...) {
+      dir <- private$cached_dir(id, "input")
+      if (!is.null(dir)) {
+        path <- .rc_resolve(dir, dataset_identifier)
+        if (is.null(path)) {
+          return(NULL)
+        }
+        return(.rc_timed(paste0("read input ", dataset_identifier), .rc_read_file(path, nrows = nrows, select = select)))
+      }
       tarfile <- self$get_analyses_inputs_tar(id, destdir =  private$user_destdir)
       dataset_content <- NULL
       if (file.exists(tarfile)) {
@@ -381,7 +431,15 @@ DataHub <- R6Class(
       invisible()
     },
     # extract a outputs file content given an analysis id
-    get_ana_outputs_dataset_content = function(id, dataset_identifier, ...) {
+    get_ana_outputs_dataset_content = function(id, dataset_identifier, nrows = Inf, select = NULL, ...) {
+      dir <- private$cached_dir(id, "output")
+      if (!is.null(dir)) {
+        path <- .rc_resolve(dir, file.path("output", dataset_identifier))
+        if (is.null(path)) {
+          return(NULL)
+        }
+        return(.rc_timed(paste0("read output ", dataset_identifier), .rc_read_file(path, nrows = nrows, select = select)))
+      }
       tarfile <- self$get_analyses_outputs_tar(id, destdir =  private$user_destdir)
       # necessary step because outputs comes with subfolder
       dataset_identifier <- file.path("output", dataset_identifier)
@@ -397,8 +455,24 @@ DataHub <- R6Class(
       self$invalidate_ana_dataset_row(id, dataset_identifier, type = "output", ...)
       invisible()
     },
+    # path of an input/output file inside the results cache, or NULL when the
+    # cache is not usable or the file does not exist. type is "input" or "output".
+    get_ana_dataset_path = function(id, type, dataset_identifier, ...) {
+      if (!(type %in% c("input", "output"))) {
+        return(NULL)
+      }
+      dir <- private$cached_dir(id, type)
+      if (is.null(dir)) {
+        return(NULL)
+      }
+      .rc_resolve(dir, dataset_identifier, type = type)
+    },
     # extract a inputs/outputs file header given an analysis id
     get_ana_dataset_header = function(id, type, dataset_identifier, ...) {
+      path <- self$get_ana_dataset_path(id, type, dataset_identifier)
+      if (!is.null(path)) {
+        return(names(.rc_read_file(path, nrows = 1)))
+      }
       tarfile <- self$get_analyses_tar(id, label = type, destdir =  private$user_destdir)
       # necessary step because outputs comes with subfolder
       if (any(grepl(paste0(type, "/"),  untar(tarfile, list = TRUE)))) {
@@ -414,6 +488,13 @@ DataHub <- R6Class(
     },
     # extract a inputs/outputs file nrow given an analysis id
     get_ana_dataset_nrow = function(id, type, dataset_identifier, ...) {
+      path <- self$get_ana_dataset_path(id, type, dataset_identifier)
+      if (!is.null(path)) {
+        if (tolower(tools::file_ext(path)) == "parquet") {
+          return(tryCatch(arrow::ParquetFileReader$create(path)$num_rows, error = function(e) NA))
+        }
+        return(.rc_nrow(path))
+      }
       destdir <- private$user_destdir
       tarfile <- self$get_analyses_tar(id, label = type, destdir = destdir)
       if (any(grepl(paste0(type, "/"),  untar(tarfile, list = TRUE)))) {
@@ -430,6 +511,10 @@ DataHub <- R6Class(
     },
     # extract a inputs/outputs file size given an analysis id
     get_ana_dataset_size = function(id, type, dataset_identifier,...) {
+      path <- self$get_ana_dataset_path(id, type, dataset_identifier)
+      if (!is.null(path)) {
+        return(file.size(path))
+      }
       destdir <- private$user_destdir
       tarfile <- self$get_analyses_tar(id, label = type, destdir = destdir)
       if (any(grepl(paste0(type, "/"),  untar(tarfile, list = TRUE)))) {

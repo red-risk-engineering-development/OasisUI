@@ -1,0 +1,22 @@
+# Build the UI from the LOCAL source tree on top of an already built oasisui image
+# (all R dependencies are already installed there), instead of installing the package
+# from GitHub. Used for testing changes without pushing a branch.
+#
+# From the repository root:
+#   docker build -f docker/Dockerfile.oasisui_app_local \
+#     --build-arg BASE_IMAGE=coreoasis/oasisui_app:1.11.7-hotfix \
+#     -t coreoasis/oasisui_app:1.11.7-perf1 .
+ARG BASE_IMAGE=coreoasis/oasisui_app:1.11.7-hotfix
+FROM ${BASE_IMAGE}
+
+# pigz: parallel gunzip used to extract result bundles once (falls back to tar if absent)
+RUN apt-get update && apt-get install -y --no-install-recommends pigz && rm -rf /var/lib/apt/lists/*
+
+COPY BFE_RShiny/oasisui /tmp/oasisui_src
+RUN R CMD INSTALL --no-docs --no-multiarch /tmp/oasisui_src && rm -rf /tmp/oasisui_src
+
+# results cache directory (mount a volume here)
+RUN mkdir -p /cache/results
+ENV OASISUI_RESULTS_CACHE=1 \
+    OASISUI_SHARED_FS=/shared-fs \
+    OASISUI_CACHE_DIR=/cache/results
