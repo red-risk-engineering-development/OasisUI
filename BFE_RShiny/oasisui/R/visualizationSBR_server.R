@@ -81,14 +81,20 @@ visualizationSBR <- function(input, output, session,
   })
 
   # Extract Output files for given anaID----------------------------------------
-  observeEvent({
-    sub_modules$defineID$selectAnaID()
-    active()}, {
-      if (active() && !is.null(sub_modules$defineID$selectAnaID())) {
-        logMessage("updating ana outputs data list")
-        result$tbl_filesListDataana <- session$userData$data_hub$get_ana_outputs_data_list(sub_modules$defineID$selectAnaID())
-      }
-  })
+  # The (first-open) extraction of the result bundles runs in the background with a
+  # progress notification, so the app stays responsive; the list is built when ready.
+  .rc_prepare_then(
+    session,
+    id = reactive(sub_modules$defineID$selectAnaID()),
+    active = active,
+    tag = "sbr",
+    on_start = function(id) {
+      result$tbl_filesListDataana <- NULL
+    },
+    on_ready = function(id) {
+      logMessage("updating ana outputs data list")
+      result$tbl_filesListDataana <- session$userData$data_hub$get_ana_outputs_data_list(id)
+    })
 
   # Tab Summary ----------------------------------------------------------------
   sub_modules$summary <- callModule(

@@ -101,11 +101,28 @@ visualizationCBR <- function(input, output, session,
 
 
   # Extract Output files for given anaID----------------------------------------
-  observeEvent( {
-    sub_modules$defineID1$selectAnaID()
-    sub_modules$defineID2$selectAnaID()}, {
-      result$tbl_filesListDataana1 <- session$userData$data_hub$get_ana_outputs_data_list(sub_modules$defineID1$selectAnaID())
-      result$tbl_filesListDataana2 <- session$userData$data_hub$get_ana_outputs_data_list(sub_modules$defineID2$selectAnaID())
+  # Background extraction of the result bundles of each selected analysis (see visualizationSBR)
+  .rc_prepare_then(
+    session,
+    id = reactive(sub_modules$defineID1$selectAnaID()),
+    active = active,
+    tag = "cbr1",
+    on_start = function(id) {
+      result$tbl_filesListDataana1 <- NULL
+    },
+    on_ready = function(id) {
+      result$tbl_filesListDataana1 <- session$userData$data_hub$get_ana_outputs_data_list(id)
+    })
+  .rc_prepare_then(
+    session,
+    id = reactive(sub_modules$defineID2$selectAnaID()),
+    active = active,
+    tag = "cbr2",
+    on_start = function(id) {
+      result$tbl_filesListDataana2 <- NULL
+    },
+    on_ready = function(id) {
+      result$tbl_filesListDataana2 <- session$userData$data_hub$get_ana_outputs_data_list(id)
     })
 
   # Tab Output files -----------------------------------------------------------
