@@ -72,9 +72,10 @@ outputplots <- function(input, output, session,
     output[[paste0("paneltitle", i)]] <- renderOasisuiPanelHeading(plotsubmodules[[i]]())
   })
 
+  # ignoreNULL = FALSE: an analysis with no outputs yields NULL and must still reset panels
   observeEvent({
     selectAnaID()
-    filesListData()}, {
+    filesListData()}, ignoreNULL = FALSE, ignoreInit = TRUE, {
       plotPanels$remove_all()
     })
 
