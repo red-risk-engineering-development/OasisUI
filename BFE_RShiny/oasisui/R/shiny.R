@@ -26,7 +26,7 @@ oasisuiButton <- function(inputId, label, icon = NULL, width = NULL, class = c("
     type = "button",
     class = fl_class,
     `data-val` = value,
-    list(shiny:::validateIcon(icon), label),
+    list(shiny:::validateIcon(icon), tags$span(class = "action-label", label)),
     ...
   )
 }
