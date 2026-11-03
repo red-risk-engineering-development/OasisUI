@@ -162,7 +162,7 @@ OasisAPI <- R6Class(
                warning = function(w) {warning(w$message)})
       status <- http_status(response)$category
       # 292: more detailed logging of API query issues
-      if (status == "Client error" && response$headers[["content-type"]] == "text/html") {
+      if (status == "Client error" && isTRUE(grepl("text/html", response$headers[["content-type"]], fixed = TRUE))) {
         # Log only — no popup. 404 on deleted resources is expected during navigation.
         warning(paste("Client error", status_code(response), "in api_handle_response, probably trying to access a non-existent query path."))
         logMessage(response$url)
