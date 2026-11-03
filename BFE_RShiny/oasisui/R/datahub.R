@@ -337,19 +337,19 @@ DataHub <- R6Class(
           data_list <- untar_list(tarfile, to_strip = "output")
         }
       }
-      if (!is.null(data_list)) {
-        if (length(data_list) > 0) {
-          data_list <- data_list %>%
-            as.data.frame() %>%
-            setNames("files")
-          analysis_settings <- self$get_ana_settings_content(id)
-          data_list <- cbind(data_list,
-                             do.call(rbind.data.frame,
-                                     lapply(data_list$files,
-                                            .addDescription, analysis_settings)))
-        }
+      # an empty listing (e.g. the analysis was deleted and the "tar" is an API error body)
+      # means there are no outputs; callers expect NULL, not character(0)
+      if (length(data_list) == 0) {
+        return(NULL)
       }
-      data_list
+      data_list <- data_list %>%
+        as.data.frame() %>%
+        setNames("files")
+      analysis_settings <- self$get_ana_settings_content(id)
+      cbind(data_list,
+            do.call(rbind.data.frame,
+                    lapply(data_list$files,
+                           .addDescription, analysis_settings)))
     },
     # invalidate list of analysis resources
     invalidate_ana_inputs_data_list = function(id, ...) {

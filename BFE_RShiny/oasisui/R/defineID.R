@@ -234,6 +234,15 @@ defineID <- function(input, output, session,
     } else {
       result$tbl_analysesData <- NULL
     }
+    # drop a selection whose analysis no longer exists (e.g. deleted since last visit),
+    # so its results are not fetched and its stale row index does not block a reselect
+    if (!is.null(result$selectAnaID) &&
+        !result$selectAnaID %in% result$tbl_analysesData[[tbl_analysesDataNames$id]]) {
+      result$selectAnaID <- NULL
+      result$selectAnaName <- ""
+      result$selectportfolioID <- ""
+      result$preselRow <- NULL
+    }
   }
 
   .preselectAna <- function(preselAna) {
