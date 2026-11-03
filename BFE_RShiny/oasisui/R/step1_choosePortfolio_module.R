@@ -269,6 +269,12 @@ step1_choosePortfolio <- function(input, output, session,
 
   # Enable and disable link files buttons
 
+  # Selected row of dt_Portfolios, or NULL if the stored selection is stale (e.g. table reloaded with fewer rows after a delete)
+  .validPfRow <- function() {
+    sel <- input$dt_Portfolios_rows_selected
+    if (length(sel) == 1 && !is.null(result$tbl_portfoliosData) && sel <= nrow(result$tbl_portfoliosData)) sel else NULL
+  }
+
   # Enable and disable buttons
   observeEvent({
     result$portfolioID
@@ -281,14 +287,14 @@ step1_choosePortfolio <- function(input, output, session,
     disable("abuttonpgotonextstep")
     disable("abuttonuploadsourcefiles")
     result$accepted_ext = c('csv', 'comma-separated-values', '.csv', '.parquet')
-    if (length(input$dt_Portfolios_rows_selected) > 0) {
+    if (!is.null(.validPfRow())) {
       enable("abuttonpfdetails")
       enable("abuttondeletepf")
       enable("abuttonamendpf")
       enable("abuttonuploadsourcefiles")
       # the row selection will only be updated at the end, so rather use the more complicated lookup
       pfrows <- which(result$tbl_portfoliosData[, tbl_portfoliosDataNames$id] == result$portfolioID)
-      if (!is.null(result$tbl_portfoliosData) && result$portfolioID != "" && length(pfrows) > 0 &&
+      if (!is.null(result$tbl_portfoliosData) && isTRUE(result$portfolioID != "") && length(pfrows) > 0 &&
           isTRUE(result$tbl_portfoliosData[pfrows[1], tbl_portfoliosDataNames$status] == Status$Completed)) {
         enable("abuttonpgotonextstep")
       }
@@ -299,8 +305,9 @@ step1_choosePortfolio <- function(input, output, session,
   output$dt_Portfolios <- renderDT({
     logMessage("re-rendering portfolio table")
     if (!is.null(result$tbl_portfoliosData)) {
-      if (isolate(result$portfolioID) != "") {
+      if (isTRUE(isolate(result$portfolioID) != "")) {
         rowToSelect <- match(isolate(result$portfolioID), result$tbl_portfoliosData[, tbl_portfoliosDataNames$id])
+        if (is.na(rowToSelect)) rowToSelect <- 1
       } else {
         rowToSelect <- 1
       }
@@ -583,9 +590,12 @@ step1_choosePortfolio <- function(input, output, session,
   observeEvent(result$tbl_portfoliosData, ignoreNULL = FALSE, ignoreInit = TRUE, {
     if (active()) {
       logMessage(paste0("updating portfolioID choices because portfolio table was reloaded - contains ", nrow(result$tbl_portfoliosData), " rows"))
-      if (result$portfolioID == "") {
+      if (is.null(result$portfolioID) || isTRUE(result$portfolioID == "")) {
         # initial selection last portfolio created
-        pfID <- result$tbl_portfoliosData[1, tbl_portfoliosDataNames$id]
+        pfID <- ""
+        if (!is.null(result$tbl_portfoliosData) && nrow(result$tbl_portfoliosData) > 0) {
+          pfID <- result$tbl_portfoliosData[1, tbl_portfoliosDataNames$id]
+        }
       } else {
         # keep current selection
         pfID <- result$portfolioID
@@ -599,11 +609,12 @@ step1_choosePortfolio <- function(input, output, session,
     if (active()) {
       pfID <- ""
 
-      if (!is.null(input$dt_Portfolios_rows_selected)) {
-        pfID <- result$tbl_portfoliosData[input$dt_Portfolios_rows_selected, tbl_portfoliosDataNames$id]
+      sel <- .validPfRow()
+      if (!is.null(sel)) {
+        pfID <- result$tbl_portfoliosData[sel, tbl_portfoliosDataNames$id]
       }
 
-      if (result$portfolioID != pfID) {
+      if (!isTRUE(result$portfolioID == pfID)) {
         # bl_dirty <- stop_selPfID > check_selPfID
         # logMessage(paste("--- stop_selPfID is:", stop_selPfID))
         logMessage(paste("updating dt_Portfolios select because portfolioID changed to", result$portfolioID))
@@ -613,11 +624,13 @@ step1_choosePortfolio <- function(input, output, session,
             rowToSelect <- match(result$portfolioID, result$tbl_portfoliosData[, tbl_portfoliosDataNames$id])
             pageSel <- ceiling(rowToSelect/pageLength)
             # backward propagation
-            if (is.null(input$dt_Portfolios_rows_selected)) {
+            if (is.na(rowToSelect)) {
+              # portfolioID not (or no longer) in the table: nothing to select
+            } else if (is.null(sel)) {
               selectRows(dataTableProxy("dt_Portfolios"), rowToSelect)
               selectPage(dataTableProxy("dt_Portfolios"), pageSel)
               logMessage(paste("selected row is:", input$dt_Portfolios_rows_selected))
-            } else if (rowToSelect != input$dt_Portfolios_rows_selected) {
+            } else if (!identical(as.integer(rowToSelect), as.integer(sel))) {
               # re-selecting the same row would trigger event-observers on input$dt_Portfolios_rows_selected
               selectRows(dataTableProxy("dt_Portfolios"), rowToSelect)
               selectPage(dataTableProxy("dt_Portfolios"), pageSel)
@@ -652,9 +665,10 @@ step1_choosePortfolio <- function(input, output, session,
       hide("panelDefinePortfolio")
       hide("panelLinkFiles")
 
-      if (length(input$dt_Portfolios_rows_selected) > 0) {
+      sel <- .validPfRow()
+      if (!is.null(sel)) {
         # note that dt_Portfolios allows single row selection only
-        pfID <- result$tbl_portfoliosData[input$dt_Portfolios_rows_selected, tbl_portfoliosDataNames$id]
+        pfID <- result$tbl_portfoliosData[sel, tbl_portfoliosDataNames$id]
         # if incomplete show panel to link files
         #currStatus <- result$tbl_portfoliosData[input$dt_Portfolios_rows_selected, tbl_portfoliosDataNames$status]
         #if (!is.na(currStatus) && currStatus == Status$Processing) {
@@ -664,7 +678,7 @@ step1_choosePortfolio <- function(input, output, session,
           .clearUploadFiles()
           show("panelLinkFiles")
         #}
-        if (pfID != result$portfolioID) {
+        if (!isTRUE(pfID == result$portfolioID)) {
           logMessage(paste("updating portfolioID because selection in portfolio table changed to", pfID))
           # re-selecting the same programme ID in the drop-down would not re-trigger
           # any of the observers of the drop-down, however we then also want to be
@@ -673,7 +687,7 @@ step1_choosePortfolio <- function(input, output, session,
           # stop_selPfID <<- check_selPfID + 1
           result$portfolioID <- pfID
         }
-      } else {
+      } else if (length(input$dt_Portfolios_rows_selected) == 0) {
         result$portfolioID <- ""
       }
     }
