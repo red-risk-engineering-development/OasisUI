@@ -4,9 +4,9 @@
 #
 # From the repository root:
 #   docker build -f docker/Dockerfile.oasisui_app_local \
-#     --build-arg BASE_IMAGE=coreoasis/oasisui_app:1.11.7-hotfix \
+#     --build-arg BASE_IMAGE=coreoasis/oasisui_app:1.11.7 \
 #     -t coreoasis/oasisui_app:1.11.7-perf1 .
-ARG BASE_IMAGE=coreoasis/oasisui_app:1.11.7-hotfix
+ARG BASE_IMAGE=coreoasis/oasisui_app:1.11.7
 FROM ${BASE_IMAGE}
 
 # pigz: parallel gunzip used to extract result bundles once (falls back to tar if absent)

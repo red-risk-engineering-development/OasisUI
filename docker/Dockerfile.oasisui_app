@@ -43,14 +43,17 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 
 RUN pip3 install gdal numpy
 
+# Git ref (tag or branch) of this repo to install; required, no default
 ARG REF_BRANCH
-ENV REF_BRANCH=${REF_BRANCH:-master}
+RUN test -n "${REF_BRANCH}" || { echo "ERROR: REF_BRANCH build-arg is empty (e.g. --build-arg REF_BRANCH=1.12.0r1)" >&2; exit 1; }
+ENV REF_BRANCH=${REF_BRANCH}
 
 
 # Install Oasisui with dependencies
 RUN set -e && \
     R -e "install.packages('remotes', verbose = TRUE)" && \
-    R -e "remotes::install_version('revgeo', repos = 'https://cran.r-project.org')" && \
+    R -e "options(warn=2); install.packages(c('RCurl', 'RJSONIO'), repos = 'https://cloud.r-project.org')" && \
+    R -e "options(warn=2); install.packages('https://cran.r-project.org/src/contrib/Archive/revgeo/revgeo_0.15.tar.gz', repos = NULL, type = 'source')" && \
     R -e "remotes::install_github('daattali/shinyjs', ref = 'v1.1', upgrade = 'always')" && \
     R -e "options(warn=2); remotes::install_github('red-risk-engineering-development/OasisUI', ref = '${REF_BRANCH}', subdir = 'BFE_RShiny/oasisui')" && \
     echo "Verifying oasisui package installation..." && \
