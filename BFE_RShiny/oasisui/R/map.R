@@ -78,13 +78,17 @@ build_marker_data <- function(data, session, paramID, step = NULL) {
   # sum over all TIVs
   tiv <- data.frame(total = rep_len(0, nrow(data)))
   tiv_var <- 0
+  contributed <- FALSE
   for (i in grep("tiv", names(data))) {
     if (length(data[[i]]) > 0 && !all(is.na(data[[i]]))) {
       # should we check for individual NAs and set to zero for the summation below?
       # doesn't seem to be an issue atm.
       tiv_var <- tiv_var + data[[i]]
-      tiv$total <- add_commas(tiv_var)
+      contributed <- TRUE
     }
+  }
+  if (contributed) {
+    tiv$total <- add_commas(tiv_var)
   }
 
   data <- data %>% mutate("tiv_tot" = tiv$total)
@@ -114,19 +118,20 @@ build_marker_data <- function(data, session, paramID, step = NULL) {
 
 # Extract error messages
 .keys_errors_msg <- function(data, session, paramID) {
-  keys_success <- session$userData$data_hub$get_ana_success_summary_content(paramID)
   keys_errors <- session$userData$data_hub$get_ana_errors_summary_content(id = paramID)
   # unify names cases for merging
-  names(keys_success) <- tolower(names(keys_success))
   names(keys_errors) <- tolower(names(keys_errors))
 
   # note below may throw a "Warning: Unknown or uninitialised column: `detail`."
-  if (!is.null(keys_errors) && is.null(keys_errors$detail) && !is.null(keys_success)) {
-    if (length(as.numeric(keys_errors$locid)) > 0) {
+  if (!is.null(keys_errors) && is.null(keys_errors$detail) && length(as.numeric(keys_errors$locid)) > 0) {
+    # success summary is only needed (and downloaded) when there are errors
+    keys_success <- session$userData$data_hub$get_ana_success_summary_content(paramID)
+    names(keys_success) <- tolower(names(keys_success))
+    if (!is.null(keys_success)) {
       key_chain <- left_join(keys_success, keys_errors, by = c("loc_id" = "locid"))
       message <- group_by(key_chain, loc_id) %>%
         summarize(message = paste(paste(perilid, ":", message), collapse = " / "))
-      if (grepl("locnumber.x", names(data))) {
+      if (any(grepl("locnumber.x", names(data)))) {
         names(data) <- gsub(".x", "", names(data))
       }
       data$locnumber <- as.character(data$locnumber)

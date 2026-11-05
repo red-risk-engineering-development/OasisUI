@@ -150,6 +150,10 @@ exposurevalidationmap <- function(input,
       result$perils_codes <- names(mapped_perils)
       logMessage("Updating input$chkgrp_perils")
       updateCheckboxGroupInput(session, inputId = "chkgrp_perils", choices = as.list(perils), selected = as.list(perils))
+      # unchanged selection sends no input event, so refresh directly
+      if (retReload && setequal(perils, input$chkgrp_perils)) {
+        .updateUploadedLocsCheckPeril()
+      }
     }
   })
 
