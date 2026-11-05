@@ -289,6 +289,7 @@ panelOutputModule <- function(input, output, session,
 
   observeEvent({inputplottype()
     input$chkboxgrplosstypes}, {
+      req(inputplottype())
       result$Title <- ""
       output$outputplot <- renderPlotly(NULL)
       if (length(plottypeslist[[inputplottype()]]$uncertaintycols) > 0) {
